@@ -62,7 +62,8 @@ a.pill:hover{background:var(--hover)}
   display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:11px;align-content:start}
 .grid::-webkit-scrollbar{width:6px}.grid::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:3px}
 
-.card{background:var(--raised);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:grid;grid-template-rows:auto auto;animation:rise .18s ease-out}
+.card{background:var(--raised);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:grid;grid-template-rows:auto auto}
+.card.fresh{animation:rise .18s ease-out}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}}
 .card.local{border-color:rgba(255,178,36,.4)}
 .faces{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
@@ -92,6 +93,8 @@ select{height:30px;flex:1;min-width:0;padding:0 8px;border-radius:9px;background
 .kv dd{margin:0;font-weight:500;text-align:right;overflow-wrap:anywhere;min-width:0}
 .qr{display:grid;gap:8px;padding:12px;border-radius:14px;background:var(--raised)}
 .qr p{margin:0;color:var(--muted);font-size:11px}
+.qr input{height:34px;padding:0 11px;border-radius:9px;background:var(--surface);border:1px solid var(--line);color:var(--text);font:500 11.5px var(--font);width:100%}
+.qr input::placeholder{color:var(--muted);font-weight:400}
 .qr code{display:block;padding:9px 11px;border-radius:9px;background:var(--surface);color:#c9b8ff;font-size:11px;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .btn{height:36px;padding:0 14px;border-radius:11px;background:var(--raised);border:1px solid var(--line);color:var(--text);
   font-weight:600;font-size:12px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none}
@@ -144,6 +147,8 @@ select{height:30px;flex:1;min-width:0;padding:0 8px;border-radius:9px;background
         <div class="qr">
           <p>Guests open this on their phone, type their name and take two photos.</p>
           <code id="signupUrl">signup.html</code>
+          <p class="warn" id="hostWarn" hidden>This is a <b>localhost</b> address. A phone cannot open it &mdash; it would look for a server on the phone itself. Type this machine's address on the network and the link below updates.</p>
+          <input type="text" id="hostIn" placeholder="e.g. 192.168.1.20:8765" spellcheck="false" autocapitalize="off" hidden>
           <div class="stack">
             <button class="btn full" id="copy" type="button"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2.5"></rect><path d="M15 5.5A2.5 2.5 0 0 0 12.5 3H5.5A2.5 2.5 0 0 0 3 5.5v7A2.5 2.5 0 0 0 5.5 15"></path></svg>Copy the sign-up link</button>
             <a class="btn full" id="openSignup" href="signup.html" target="_blank" rel="noopener">Open it here</a>
@@ -186,6 +191,14 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'
 const QUEUE = 'cue.signup.queue';
 const ASSIGN = 'cue.dash.cameras';
 let people = [], sheetUrl = CFG.sheetUrl, timer = null, polling = false;
+/* A poll that fails must not empty the dashboard: keep the last good read and
+   say it is stale. Apps Script cold-starts and rate-limits, so a transient
+   failure is normal and used to make every participant vanish for 5 seconds. */
+let lastGood = null, lastGoodAt = 0;
+/* Re-rendering identical data replays the entrance animation and rebuilds every
+   <img>, which reads as flickering. Only touch the DOM when something changed. */
+let lastSig = '';
+const shownIds = new Set();
 
 /* Local camera assignments, so the desk mapping survives a reload even when the
    sheet is not writable from here. The sheet stays the record of record. */
@@ -195,9 +208,34 @@ const local = {
 };
 function queued(){ try { return JSON.parse(localStorage.getItem(QUEUE) || '[]'); } catch { return []; } }
 
-const signupHref = new URL('signup.html', location.href).href;
-$('signupUrl').textContent = signupHref;
-$('openSignup').href = signupHref;
+/* The sign-up link has to be one a PHONE can open. When this dashboard is itself
+   opened on localhost, `location.href` gives 127.0.0.1, which on a phone means the
+   phone - so it silently goes nowhere. Let the operator name the real address once
+   and remember it. `signupBase` in config.js overrides this entirely. */
+const HOSTKEY = 'cue.dash.host';
+const LOOPBACK = /^(localhost|127(?:\.\d+){3}|\[?::1\]?)$/i.test(location.hostname);
+function savedHost(){ try { return localStorage.getItem(HOSTKEY) || ''; } catch { return ''; } }
+function saveHost(v){ try { v ? localStorage.setItem(HOSTKEY, v) : localStorage.removeItem(HOSTKEY); } catch {} }
+let signupHref = '';
+function paintSignupLink(){
+  const base = (CFG.signupBase || savedHost()).trim();
+  if (base){
+    const withScheme = /^https?:\/\//i.test(base) ? base : location.protocol + '//' + base;
+    try { signupHref = new URL('signup.html', withScheme.replace(/\/*$/, '/')).href; }
+    catch { signupHref = new URL('signup.html', location.href).href; }
+  } else {
+    signupHref = new URL('signup.html', location.href).href;
+  }
+  $('signupUrl').textContent = signupHref;
+  $('openSignup').href = signupHref;
+  /* only nag when the link really is unusable from a phone */
+  const unusable = LOOPBACK && !base && !CFG.signupBase;
+  $('hostWarn').hidden = !unusable;
+  $('hostIn').hidden = !(unusable || savedHost());
+  if (savedHost() && $('hostIn').value !== savedHost()) $('hostIn').value = savedHost();
+}
+$('hostIn').oninput = () => { saveHost($('hostIn').value.trim()); paintSignupLink(); };
+paintSignupLink();
 /* navigator.clipboard does not exist on a plain-HTTP origin, and this page is
    normally served from a LAN address so phones can reach the sign-up link.
    Fall back to the old execCommand path, which does work there. */
@@ -224,11 +262,10 @@ $('copyRoster').onclick = async () => {
 function flash(btn, text){ const was = btn.innerHTML; btn.textContent = text; setTimeout(() => (btn.innerHTML = was), 1600); }
 
 /* ---- load ---- */
-async function load(){
+async function load(loud){
   if (polling) return;
   polling = true;
-  $('linkChip').innerHTML = '<span class="spin"></span>Loading';
-  $('linkChip').className = 'pill';
+  if (loud){ $('linkChip').innerHTML = '<span class="spin"></span>Loading'; $('linkChip').className = 'pill'; }
   let remote = null, why = '';
   if (CFG.endpoint){
     try {
@@ -241,9 +278,12 @@ async function load(){
     } catch (e) { why = String((e && e.message) || e); }
   } else { why = 'no endpoint in config.js'; }
 
+  if (remote){ lastGood = remote; lastGoodAt = Date.now(); }
+  /* fall back to the last successful read rather than to nothing */
+  const shown = remote || lastGood;
   const pending = queued().map((r) => Object.assign({}, r, { pending:true }));
-  const seen = new Set((remote || []).map((p) => p.guestId));
-  people = (remote || []).concat(pending.filter((p) => !seen.has(p.guestId)));
+  const seen = new Set((shown || []).map((p) => p.guestId));
+  people = (shown || []).concat(pending.filter((p) => !seen.has(p.guestId)));
   const cams = local.read();
   people.forEach((p) => { if (!p.camera && cams[p.guestId]) p.camera = cams[p.guestId]; });
 
@@ -253,30 +293,49 @@ async function load(){
 }
 function paintLink(remote, why, pendingCount){
   const chip = $('linkChip');
+  const stale = !remote && !!lastGood;
+  const when = lastGoodAt ? new Date(lastGoodAt).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '';
   if (remote){ chip.className = 'pill ok'; chip.innerHTML = '<span class="dot ready"></span>Sheet connected'; }
+  else if (stale){ chip.className = 'pill warn'; chip.innerHTML = '<span class="dot hold"></span>Sheet not answering'; }
   else { chip.className = 'pill bad'; chip.innerHTML = '<span class="dot air blink"></span>Sheet not reachable'; }
-  $('srcChip').textContent = remote ? 'Live from the sheet' : 'This device only';
+  $('srcChip').textContent = remote ? 'Live from the sheet' : stale ? 'As of ' + when : 'This device only';
   $('srcChip').className = 'pill' + (remote ? '' : ' warn');
   $('sheet').style.opacity = sheetUrl ? '' : '.4';
   $('sheet').href = sheetUrl || '#';
   const notes = [];
-  if (!remote) notes.push('<p class="warn"><b>Not reading the Google Sheet</b> (' + esc(why) + '). Anything below came from this browser only, so other machines will not see it. Set <code>endpoint</code> in <code>config.js</code> to the Apps Script <code>/exec</code> URL.</p>');
+  if (!remote && stale) notes.push('<p class="warn"><b>The sheet did not answer</b> (' + esc(why) + '). The list below is the last good read, from ' + esc(when) + ', so a sign-up since then may be missing. Still retrying.</p>');
+  if (!remote && !stale) notes.push('<p class="warn"><b>Not reading the Google Sheet</b> (' + esc(why) + '). Anything below came from this browser only, so other machines will not see it. Set <code>endpoint</code> in <code>config.js</code> to the Apps Script <code>/exec</code> URL.</p>');
   if (pendingCount) notes.push('<p class="warn">' + pendingCount + ' sign-up' + (pendingCount === 1 ? '' : 's') + ' on this device never reached the sheet. They are marked <b>Not in the sheet</b>.</p>');
   $('notes').innerHTML = notes.length ? '<div class="sec">Heads up</div>' + notes.join('') : '';
 }
 
 /* ---- paint ---- */
+/* Everything the cards render from. If this is unchanged there is nothing to
+   redraw, and redrawing anyway is what made the list flicker every 5 seconds. */
+function signature(){
+  return JSON.stringify(people.map((p) => [p.guestId, p.name, p.role, p.camera, p.consent, p.front, p.side, !!p.pending]));
+}
 function paint(){
   $('countChip').textContent = people.length + (people.length === 1 ? ' participant' : ' participants');
+  const sig = signature();
+  if (sig === lastSig){ paintCounts(); return; }
+  lastSig = sig;
   const grid = $('grid');
   if (!people.length){
     grid.innerHTML = '<div class="empty">Nobody has signed up yet.<br><b>Send a guest the sign-up link</b> from the panel on the right.<br>They appear here as soon as they press Send.</div>';
   } else {
     grid.innerHTML = people.map(card).join('');
+    people.forEach((p) => shownIds.add(p.guestId));
+    /* drop the marker once it has played, so a lingering class never implies
+       a card is still animating */
+    setTimeout(() => grid.querySelectorAll('.card.fresh').forEach((c) => c.classList.remove('fresh')), 300);
     grid.querySelectorAll('select').forEach((sel) => (sel.onchange = () => {
       const p = people.find((x) => x.guestId === sel.dataset.id);
       if (!p) return;
       p.camera = sel.value; local.set(p.guestId, sel.value);
+      /* adopt the new value as the rendered state, so the next poll does not
+         rebuild the grid underneath the operator's cursor */
+      lastSig = signature();
       assign(p.guestId, sel.value); paintCounts();
     }));
   }
@@ -291,7 +350,8 @@ function card(p){
   const when = p.submittedAt ? new Date(p.submittedAt) : null;
   const time = when && !isNaN(when) ? when.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) : '';
   const opts = Object.keys(CAMS).map((c) => '<option value="' + c + '"' + (c === (p.camera || '') ? ' selected' : '') + '>' + esc(CAMS[c]) + '</option>').join('');
-  return '<article class="card' + (p.pending ? ' local' : '') + '">' +
+  const fresh = shownIds.has(p.guestId) ? '' : ' fresh';
+  return '<article class="card' + fresh + (p.pending ? ' local' : '') + '">' +
     '<div class="faces">' + face(p.front, 'Front') + face(p.side, 'Side') + '</div>' +
     '<div class="meat"><h3>' + esc(p.name || 'Unnamed') + '</h3>' +
       '<div class="sub"><span>' + esc(p.role || 'No role given') + '</span>' + (time ? '<span>&middot; ' + esc(time) + '</span>' : '') + '</div>' +
@@ -354,10 +414,10 @@ $('exportSheet').onclick = async () => {
   }
 };
 
-$('refresh').onclick = load;
+$('refresh').onclick = () => load(true);
 $('auto').onclick = () => {
   if (timer){ clearInterval(timer); timer = null; $('auto').classList.remove('on'); return; }
-  timer = setInterval(load, Math.max(5000, CFG.pollMs)); $('auto').classList.add('on'); load();
+  timer = setInterval(() => load(false), Math.max(5000, CFG.pollMs)); $('auto').classList.add('on'); load(true);
 };
 $('auto').click();
 </script>

@@ -114,6 +114,9 @@ async function signup(mode) {
   f.remove();
 }
 
+/* a real 1x1 PNG, so an <img> in a fixture actually loads and keeps its identity */
+const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/AAAADAAEAAQL6xrIAAAAASUVORK5CYII=';
+
 async function dashboard(mode) {
   const tag = '[dash ' + mode + '] ';
   if (mode === 'queued') {
@@ -136,6 +139,23 @@ async function dashboard(mode) {
     say(/This device only/.test($('srcChip').textContent), tag + 'labels the data as device-only');
     say(/Not reading the Google Sheet/.test($('notes').textContent), tag + 'explains how to fix it');
     say($('signupUrl').textContent.endsWith('/signup.html'), tag + 'shows the sign-up URL to hand out');
+    /* The harness runs on 127.0.0.1, which is exactly the case that silently
+       fails on a phone: it would look for a server on the phone itself. */
+    say(!$('hostWarn').hidden, tag + 'WARNS that a localhost link is useless on a phone');
+    say(!$('hostIn').hidden, tag + 'offers a box to type the real network address');
+    $('hostIn').value = '192.168.1.20:8765';
+    $('hostIn').dispatchEvent(new w.Event('input'));
+    say($('signupUrl').textContent === 'http://192.168.1.20:8765/signup.html', tag + 'the link becomes the address a phone can open');
+    say($('openSignup').href === 'http://192.168.1.20:8765/signup.html', tag + 'and Open-it-here follows the same address');
+    say($('hostWarn').hidden, tag + 'the warning clears once an address is given');
+    let copied2 = null;
+    Object.defineProperty(w.navigator, 'clipboard', { configurable: true, value: { writeText: async (t) => { copied2 = t; } } });
+    $('copy').click();
+    say(await until(() => copied2 === 'http://192.168.1.20:8765/signup.html'), tag + 'Copy copies the phone-reachable link, not localhost');
+    $('hostIn').value = 'https://cue.loca.lt';
+    $('hostIn').dispatchEvent(new w.Event('input'));
+    say($('signupUrl').textContent === 'https://cue.loca.lt/signup.html', tag + 'a full tunnel URL with its own scheme is accepted');
+    w.localStorage.removeItem('cue.dash.host');
   }
   if (mode === 'queued') {
     say(d.querySelectorAll('.card').length === 1, tag + 'shows the device-held sign-up');
@@ -147,7 +167,7 @@ async function dashboard(mode) {
   if (mode === 'live') {
     const rows = [
       { guestId: 'sarah-tan', name: 'Sarah Tan', role: 'Guest of honour', camera: 'CAM-GUEST', consent: true,
-        front: 'https://example.invalid/a.jpg', side: 'https://example.invalid/b.jpg', submittedAt: new Date().toISOString() },
+        front: PIXEL, side: PIXEL, submittedAt: new Date().toISOString() },
       { guestId: 'daniel-reyes', name: 'Daniel Reyes', role: 'Speaker', camera: '', consent: true,
         front: '', side: '', submittedAt: new Date().toISOString() }];
     let assigned = null;
@@ -172,6 +192,38 @@ async function dashboard(mode) {
         tag + 'writes the camera assignment back to the sheet');
     say(JSON.parse(w.localStorage.getItem('cue.dash.cameras')||'{}')['daniel-reyes'] === 'CAM-WIDE', tag + 'also remembers it locally');
     say(/Agreed<\/dt><dd>2 of 2/.test($('consentKv').innerHTML), tag + 'consent tally is right');
+
+    /* ---- the flicker, and the disappearing list ---- */
+    /* An identical poll must not rebuild the DOM. If it does, the entrance
+       animation replays and every <img> is recreated: that is the flicker. */
+    await wait(400);                      /* let the fresh marker clear first */
+    const nodeBefore = d.querySelector('.card');
+    const imgBefore = d.querySelector('.card img');
+    say(!!imgBefore, tag + 'the fixture photo rendered as an <img>');
+    $('refresh').click();
+    await wait(600);
+    say(d.querySelector('.card') === nodeBefore, tag + 'an unchanged poll does NOT rebuild the cards');
+    say(d.querySelector('.card img') === imgBefore, tag + 'and does not recreate the photos');
+    say(!d.querySelector('.card').classList.contains('fresh'), tag + 'no entrance animation on a card already shown');
+
+    /* A poll that fails must keep showing the last good list, not empty it. */
+    const countBefore = d.querySelectorAll('.card').length;
+    w.fetch = async () => { throw new Error('Failed to fetch'); };
+    $('refresh').click();
+    await until(() => /not answering/i.test($('linkChip').textContent), 4000);
+    say(d.querySelectorAll('.card').length === countBefore, tag + 'a FAILED poll keeps the participants on screen');
+    say(/Sheet not answering/.test($('linkChip').textContent), tag + 'and says the sheet is not answering');
+    say(!/Sheet not reachable/.test($('linkChip').textContent), tag + 'not the never-connected wording');
+    say(/did not answer/.test($('notes').textContent), tag + 'explains that the list may be behind');
+    say(/last good read/.test($('notes').textContent), tag + 'says it is the last good read');
+    say(!/came from this browser only/.test($('notes').textContent), tag + 'does not falsely claim the data is device-only');
+    say(/^As of /.test($('srcChip').textContent), tag + 'timestamps how old the list is');
+
+    /* recovering must go back to green */
+    w.fetch = async () => ({ ok:true, json: async () => ({ ok:true, participants:rows }) });
+    $('refresh').click();
+    say(await until(() => /Sheet connected/.test($('linkChip').textContent), 4000), tag + 'recovers to connected on the next good poll');
+    say(d.querySelectorAll('.card').length === countBefore, tag + 'and the list is intact after recovery');
     /* the roster shape the desk consumes */
     let copied = null;
     Object.defineProperty(w.navigator, 'clipboard', { configurable: true, value: { writeText: async (t) => { copied = t; } } });
