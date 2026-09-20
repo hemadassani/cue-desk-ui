@@ -1,0 +1,359 @@
+<!doctype html><html><head><meta charset="utf-8"><title>CUE sign-up and dashboard - end to end</title></head><body>
+<pre id="out">running - launched by tests/run.py, results are POSTed back to it</pre>
+<script>
+const log = [];
+const say = (ok, msg) => log.push((ok ? 'PASS  ' : 'FAIL  ') + msg);
+const flush = () => { document.getElementById('out').textContent = log.join('\n'); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(fn, ms = 6000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { try { if (fn()) return true; } catch {} await wait(60); }
+  return false;
+}
+function frame(src) {
+  return new Promise((res) => {
+    const f = document.createElement('iframe');
+    f.width = 420; f.height = 760; f.src = src;
+    f.onload = () => res(f);
+    document.body.appendChild(f);
+  });
+}
+
+/* Drive signup.html end to end. `mode` decides what the network does. */
+async function signup(mode) {
+  const tag = '[signup ' + mode + '] ';
+  const f = await frame('../signup.html?' + mode);
+  const w = f.contentWindow, d = f.contentDocument;
+  const $ = (id) => d.getElementById(id);
+
+  say($('stepNo').textContent === 'Step 1 of 4', tag + 'starts on step 1');
+  say(!!d.querySelector('.roles button'), tag + 'role chips rendered');
+
+  $('name').value = 'Sarah Tan';
+  d.querySelector('.roles button').click();                   /* Speaker */
+  say(d.querySelector('.roles button').classList.contains('on'), tag + 'role chip selects');
+  $('next').click();
+  say($('stepNo').textContent === 'Step 2 of 4', tag + 'advances to the front photo');
+  say(/look straight at the camera/i.test($('s2').textContent), tag + 'prompts: look straight at the camera');
+
+  /* fake camera device, so this is the real getUserMedia -> canvas -> JPEG path */
+  const got2 = await until(() => $('v2').videoWidth > 0);
+  say(got2, tag + 'front camera preview has frames');
+  say(!$('shot2').classList.contains('dead'), tag + 'no camera-denied fallback shown');
+  $('next').click();                                          /* take */
+  say(!$('p2').hidden && /^data:image\/jpeg;base64,/.test($('p2').src), tag + 'front photo captured as JPEG');
+  const frontLen = $('p2').src.length;
+  say(frontLen > 2000, tag + 'front photo has real bytes (' + frontLen + ' chars)');
+  say(/Looks good/.test($('h2').textContent), tag + 'confirms the front shot');
+  $('next').click();                                          /* use this photo */
+
+  say($('stepNo').textContent === 'Step 3 of 4', tag + 'advances to the side photo');
+  say(/turn your head to the side/i.test($('s3').textContent), tag + 'prompts: turn your head to the side');
+  say(!!d.querySelector('#s3 .guide.side'), tag + 'side guide overlay is the offset one');
+  await until(() => $('v3').videoWidth > 0);
+  $('next').click();
+  say(/^data:image\/jpeg;base64,/.test($('p3').src), tag + 'side photo captured as JPEG');
+  $('next').click();
+
+  say($('stepNo').textContent === 'Step 4 of 4', tag + 'reaches review');
+  say($('rName').textContent === 'Sarah Tan', tag + 'review shows the name');
+  say($('rRole').textContent === 'Speaker', tag + 'review shows the role');
+  say($('r2img').src.startsWith('data:image/jpeg'), tag + 'review shows the front photo');
+  say($('r3img').src.startsWith('data:image/jpeg'), tag + 'review shows the side photo');
+  say($('next').disabled, tag + 'send is BLOCKED until consent is ticked');
+
+  $('consent').checked = true;
+  $('consent').dispatchEvent(new w.Event('change'));
+  say(!$('next').disabled, tag + 'send unlocks once consent is ticked');
+
+  /* retake round-trip */
+  d.querySelector('[data-goto="2"]').click();
+  say($('p2').hidden && $('stepNo').textContent === 'Step 2 of 4', tag + 'Retake clears the shot and goes back');
+  say(await until(() => $('v2').videoWidth > 0), tag + 'camera survives a retake without resetting');
+  $('next').click();
+  say(/^data:image\/jpeg;base64,/.test($('p2').src), tag + 'retaken front photo captured');
+  $('next').click(); $('next').click();
+  say($('stepNo').textContent === 'Step 4 of 4', tag + 'returns to review after a retake');
+
+  /* the network */
+  let sentBody = null;
+  if (mode === 'ok') {
+    w.fetch = async (url, init) => { sentBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, guestId: 'sarah-tan' }) }; };
+  } else if (mode === 'reject') {
+    w.fetch = async () => { throw new Error('Failed to fetch'); };
+  } else {
+    w.fetch = async (url, init) => { sentBody = JSON.parse(init.body);
+      return { ok: false, status: 500, text: async () => JSON.stringify({ ok: false, error: 'sheet is full' }) }; };
+  }
+  w.localStorage.removeItem('cue.signup.queue');
+  $('next').click();
+  await until(() => $('stepNo').textContent === 'Sent');
+
+  const head = $('doneHead').textContent, body = $('doneText').textContent;
+  if (mode === 'ok') {
+    say(/You are on the list/.test(head), tag + 'success screen on a good reply');
+    say(/sarah-tan/.test($('doneId').textContent), tag + 'shows the guest id the sheet assigned');
+    say($('doneId').className === 'pill', tag + 'success chip is not a warning');
+    say(sentBody && sentBody.name === 'Sarah Tan' && sentBody.role === 'Speaker', tag + 'POST carries name and role');
+    say(sentBody && sentBody.guestId === 'sarah-tan', tag + 'POST carries a slugged guestId');
+    say(sentBody && sentBody.consent === true, tag + 'POST records consent');
+    say(sentBody && /^data:image\/jpeg/.test(sentBody.front) && /^data:image\/jpeg/.test(sentBody.side), tag + 'POST carries BOTH photos');
+    const kb = Math.round((sentBody.front.length + sentBody.side.length) / 1024);
+    say(kb < 700, tag + 'payload is ' + kb + ' KB, inside the Apps Script POST limit');
+    say(w.localStorage.getItem('cue.signup.queue') === null, tag + 'nothing queued after a successful send');
+  } else {
+    say(/not sent yet|Could not send/.test(head), tag + 'does NOT claim success when the send failed');
+    say(!/You are on the list/.test(head), tag + 'no green "on the list" lie');
+    say($('doneId').className === 'pill warn', tag + 'chip is a warning');
+    const q = JSON.parse(w.localStorage.getItem('cue.signup.queue') || '[]');
+    say(q.length === 1 && q[0].name === 'Sarah Tan', tag + 'held the sign-up locally (' + q.length + ')');
+    say(/has not reached the production team/.test(body), tag + 'tells the guest it has not reached the team');
+    if (mode === 'error') say(/sheet is full/.test(body), tag + 'surfaces the server error text');
+  }
+  f.remove();
+}
+
+async function dashboard(mode) {
+  const tag = '[dash ' + mode + '] ';
+  if (mode === 'queued') {
+    localStorage.setItem('cue.signup.queue', JSON.stringify([
+      { guestId: 'ada-lovelace', name: 'Ada Lovelace', role: 'Speaker', consent: true,
+        submittedAt: new Date().toISOString(), front: 'data:image/jpeg;base64,x', side: 'data:image/jpeg;base64,x' }]));
+  } else {
+    localStorage.removeItem('cue.signup.queue');
+  }
+  const f = await frame('../dashboard.html?' + mode);
+  const w = f.contentWindow, d = f.contentDocument;
+  const $ = (id) => d.getElementById(id);
+  await until(() => !/Loading/.test($('linkChip').textContent));
+
+  if (mode === 'empty') {
+    say(/Nobody has signed up yet/.test($('grid').textContent), tag + 'empty state tells them to send the link');
+    $('exportCsv').click();
+    say(/Nothing to export yet/.test($('exportCsv').textContent), tag + 'CSV refuses when there is nothing to export');
+    say(/Sheet not reachable/.test($('linkChip').textContent), tag + 'says plainly the sheet is not reachable');
+    say(/This device only/.test($('srcChip').textContent), tag + 'labels the data as device-only');
+    say(/Not reading the Google Sheet/.test($('notes').textContent), tag + 'explains how to fix it');
+    say($('signupUrl').textContent.endsWith('/signup.html'), tag + 'shows the sign-up URL to hand out');
+  }
+  if (mode === 'queued') {
+    say(d.querySelectorAll('.card').length === 1, tag + 'shows the device-held sign-up');
+    say(/Ada Lovelace/.test($('grid').textContent), tag + 'shows the name');
+    say(/Not in the sheet/.test($('grid').textContent), tag + 'badges it as NOT in the sheet');
+    say(d.querySelector('.card').classList.contains('local'), tag + 'card is visually marked local');
+    say(/1 participant\b/.test($('countChip').textContent), tag + 'counts it');
+  }
+  if (mode === 'live') {
+    const rows = [
+      { guestId: 'sarah-tan', name: 'Sarah Tan', role: 'Guest of honour', camera: 'CAM-GUEST', consent: true,
+        front: 'https://example.invalid/a.jpg', side: 'https://example.invalid/b.jpg', submittedAt: new Date().toISOString() },
+      { guestId: 'daniel-reyes', name: 'Daniel Reyes', role: 'Speaker', camera: '', consent: true,
+        front: '', side: '', submittedAt: new Date().toISOString() }];
+    let assigned = null;
+    w.fetch = async (url, init) => {
+      if (init && init.method === 'POST') { assigned = JSON.parse(init.body); return { ok: true, json: async () => ({ ok: true }) }; }
+      return { ok: true, json: async () => ({ ok: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/FAKE/edit', participants: rows }) };
+    };
+    $('refresh').click();
+    await until(() => d.querySelectorAll('.card').length === 2);
+    say(true, tag + 'renders both participants from the sheet');
+    say(/Sheet connected/.test($('linkChip').textContent), tag + 'reports the sheet as connected');
+    say($('sheet').href.includes('/spreadsheets/d/FAKE/'), tag + 'Open-the-Sheet button points at the real sheet');
+    say(!/Not reading the Google Sheet/.test($('notes').textContent), tag + 'no warning when it IS reading the sheet');
+    const sel = d.querySelector('select[data-id="sarah-tan"]');
+    say(sel && sel.value === 'CAM-GUEST', tag + 'existing camera assignment is selected');
+    say(/Guest camera<\/dt><dd>1/.test($('camCount').innerHTML), tag + 'camera tally counts the assignment');
+    /* assign Daniel to the wide shot */
+    const sel2 = d.querySelector('select[data-id="daniel-reyes"]');
+    sel2.value = 'CAM-WIDE'; sel2.dispatchEvent(new w.Event('change'));
+    await until(() => assigned !== null);
+    say(assigned && assigned.type === 'assign_camera' && assigned.guestId === 'daniel-reyes' && assigned.camera === 'CAM-WIDE',
+        tag + 'writes the camera assignment back to the sheet');
+    say(JSON.parse(w.localStorage.getItem('cue.dash.cameras')||'{}')['daniel-reyes'] === 'CAM-WIDE', tag + 'also remembers it locally');
+    say(/Agreed<\/dt><dd>2 of 2/.test($('consentKv').innerHTML), tag + 'consent tally is right');
+    /* the roster shape the desk consumes */
+    let copied = null;
+    Object.defineProperty(w.navigator, 'clipboard', { configurable: true, value: { writeText: async (t) => { copied = t; } } });
+    $('copyRoster').click();
+    await until(() => copied !== null);
+    const msg = JSON.parse(copied);
+    say(msg.type === 'roster' && msg.guests.length === 2 && msg.guests[0].name === 'Sarah Tan' && 'role' in msg.guests[0],
+        tag + 'roster copy matches the desk\'s roster message shape');
+
+    /* no navigator.clipboard, as on a plain-HTTP LAN address */
+    Object.defineProperty(w.navigator, 'clipboard', { configurable: true, value: undefined });
+    let threw = false;
+    try { $('copy').click(); await wait(200); } catch { threw = true; }
+    say(!threw, tag + 'copy survives a missing navigator.clipboard');
+    say(/Copied|Copy it from the box/.test($('copy').textContent), tag + 'copy falls back and says what happened');
+
+    /* ---- keeping the data for future use ---- */
+    let csvBlob = null, opened = null, exportBody = null;
+    w.URL.createObjectURL = (b) => { csvBlob = b; return 'blob:stub'; };
+    w.HTMLAnchorElement.prototype.click = function(){ /* never really download in a test */ };
+    $('exportCsv').click();
+    say(await until(() => csvBlob !== null), tag + 'Download CSV produces a file');
+    const text = await csvBlob.text();
+    const lines = text.replace(/^\ufeff/, '').trim().split('\r\n');
+    say(lines[0] === 'name,role,guestId,camera,consent,submittedAt,front,side', tag + 'CSV header names every column');
+    say(lines.length === 3, tag + 'CSV has one row per participant (' + (lines.length - 1) + ')');
+    say(/Sarah Tan/.test(lines[1]) && /CAM-GUEST/.test(lines[1]), tag + 'CSV carries the name and the camera');
+    const bytes = new Uint8Array(await csvBlob.arrayBuffer());
+    say(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf, tag + 'CSV bytes start with a UTF-8 BOM so Excel reads it right');
+    say(csvBlob.type.indexOf('text/csv') === 0, tag + 'CSV blob has the right media type');
+
+    w.open = (url) => { opened = url; return null; };
+    w.fetch = async (url, init) => {
+      const b = JSON.parse(init.body);
+      if (b.type === 'export_sheet') { exportBody = b;
+        return { ok:true, text: async () => JSON.stringify({ ok:true, url:'https://docs.google.com/spreadsheets/d/COPY/edit', rows:2 }) }; }
+      return { ok:true, text: async () => '{"ok":true}', json: async () => ({ ok:true, participants:rows }) };
+    };
+    $('exportSheet').click();
+    say(await until(() => exportBody !== null), tag + 'Export asks the script for a standalone copy');
+    say(exportBody.type === 'export_sheet', tag + 'export uses the export_sheet action');
+    say(await until(() => opened !== null), tag + 'opens the new spreadsheet');
+    say(/\/spreadsheets\/d\/COPY\//.test(opened || ''), tag + 'opens the COPY, not the working sheet');
+    say(await until(() => /2 rows copied/.test($('exportSheet').textContent)), tag + 'reports how many rows were copied');
+  }
+  f.remove();
+}
+
+/* A phone that refuses the camera must still be able to finish via upload. */
+async function cameraDenied() {
+  const tag = '[no camera] ';
+  const f = await frame('../signup.html?denied');
+  const w = f.contentWindow, d = f.contentDocument;
+  const $ = (id) => d.getElementById(id);
+  Object.defineProperty(w.navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia: async () => { throw new w.DOMException('Permission denied', 'NotAllowedError'); } }
+  });
+  $('name').value = 'Rex Denied';
+  $('next').click();
+  say(await until(() => $('shot2').classList.contains('dead')), tag + 'shows the camera-unavailable fallback');
+  say(/upload one instead/i.test($('s2').textContent), tag + 'tells them to upload a photo instead');
+  say(!$('pick').hidden, tag + 'the Photo upload button is offered');
+  $('next').click();
+  say(/No picture yet/.test($('e2').textContent), tag + 'refuses to advance with no photo, and says why');
+  say($('stepNo').textContent === 'Step 2 of 4', tag + 'stays on step 2');
+
+  /* feed a file through the upload path, as the file picker would */
+  const c = d.createElement('canvas'); c.width = 60; c.height = 80;
+  const cx = c.getContext('2d'); cx.fillStyle = '#888'; cx.fillRect(0, 0, 60, 80);
+  const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg'));
+  const dt = new w.DataTransfer();
+  dt.items.add(new w.File([blob], 'face.jpg', { type: 'image/jpeg' }));
+  $('file').files = dt.files;
+  $('file').dispatchEvent(new w.Event('change'));
+  say(await until(() => /^data:image\/jpeg;base64,/.test($('p2').src || '')), tag + 'an uploaded file becomes the front photo');
+  say($('pick').hidden, tag + 'upload button hides once a photo is in');
+  f.remove();
+}
+
+/* Every step must fit the viewport with the button reachable. Before the layout
+   was viewport-bounded, a 320x568 phone put Continue 126px below the fold. */
+async function phoneFit() {
+  const SIZES = [[320,568,'iPhone SE'],[360,640,'small Android'],[375,667,'iPhone 8'],
+                 [390,844,'iPhone 14'],[414,896,'11 Pro Max'],[412,915,'Pixel 7'],[667,375,'landscape']];
+  for (const [w, h, label] of SIZES) {
+    const tag = '[fit ' + label + ' ' + w + 'x' + h + '] ';
+    const f = document.createElement('iframe');
+    f.style.border = '0'; f.width = w; f.height = h; f.src = '../signup.html';
+    await new Promise((r) => { f.onload = r; document.body.appendChild(f); });
+    const d = f.contentDocument, win = f.contentWindow, $ = (id) => d.getElementById(id);
+    let worst = '';
+    for (const step of [1, 2, 3, 4]) {
+      if (step === 2) { $('name').value = 'Fit Test'; $('next').click(); await until(() => $('v2').videoWidth > 0); }
+      if (step === 3) { $('next').click(); $('next').click(); await until(() => $('v3').videoWidth > 0); }
+      if (step === 4) { $('next').click(); $('next').click(); }
+      await wait(100);
+      const de = d.documentElement, bar = $('bar').getBoundingClientRect();
+      const vScroll = de.scrollHeight - de.clientHeight, hScroll = de.scrollWidth - de.clientWidth;
+      if (vScroll > 0) worst += ' step' + step + ' pageScrollsBy' + vScroll;
+      if (hScroll > 0) worst += ' step' + step + ' hScrollBy' + hScroll;
+      if (bar.bottom > win.innerHeight + 1) worst += ' step' + step + ' buttonBelowFoldBy' + Math.round(bar.bottom - win.innerHeight);
+      if (step === 2 || step === 3) {
+        const sr = d.querySelector('#s' + step + ' .shot').getBoundingClientRect();
+        if (sr.height < 100) worst += ' step' + step + ' pictureOnly' + Math.round(sr.height) + 'px';
+      }
+    }
+    say(!worst, tag + 'fits, no page scroll, button on screen' + (worst ? ' --' + worst : ''));
+    f.remove();
+  }
+}
+
+async function deskStillWorks() {
+  const f = await frame('../index.html');
+  const d = f.contentDocument;
+  say(!!d.querySelector('a.pill.nav[href="dashboard.html"]'), '[desk] Participants link is in the header');
+  say(d.querySelectorAll('.cam').length === 3, '[desk] three camera tiles still render');
+  say(!!d.getElementById('pgmName').textContent, '[desk] programme label still painted by its own JS');
+  await until(() => /Scripted demo|demo/.test(d.getElementById('sourceChip').textContent), 3000);
+  say(/Scripted demo/.test(d.getElementById('sourceChip').textContent), '[desk] demo fallback still engages with no server');
+  say(d.getElementById('roster').children.length > 0, '[desk] roster list still populates');
+  f.remove();
+}
+
+/* Sign-ups must reach the live desk without anyone copying anything. */
+async function deskBridge() {
+  const tag = '[bridge] ';
+  const f = await frame('../index.html');
+  const w = f.contentWindow, d = f.contentDocument, $ = (id) => d.getElementById(id);
+  const rows = [
+    { guestId:'nadia-okafor', name:'Nadia Okafor', role:'Guest of honour', camera:'CAM-GUEST', consent:true },
+    { guestId:'tomas-berg', name:'Tomas Berg', role:'Judge', camera:'CAM-WIDE', consent:true }];
+  let polls = 0;
+  /* the scripted demo publishes its own roster and keeps cutting; wait it out,
+     then take manual control so the tiles under test are not on air (an on-air
+     tile says "On air", which is correct - a name there would be redundant) */
+  await until(() => /Scripted demo/.test($('sourceChip').textContent), 4000);
+  w.CUE.setMode('manual');
+  w.take('CAM-HOST');
+  await wait(150);
+  w.fetch = async () => { polls++; return { ok:true, json: async () => ({ ok:true, participants:rows }) }; };
+  w.dispatchEvent(new w.Event('focus'));                 /* the bridge polls on focus */
+  say(await until(() => /Nadia Okafor/.test($('roster').textContent)), tag + 'a sheet sign-up reaches the desk roster');
+  say(polls > 0, tag + 'the desk actually polled the sign-up endpoint');
+  say(/Guest of honour/.test($('roster').textContent), tag + 'roster shows the role');
+  say(/Guest cam/.test($('roster').textContent), tag + 'roster shows which camera they are on');
+  say(/Nadia/.test(d.querySelector('.cam[data-cam="CAM-GUEST"] small').textContent), tag + 'the guest camera tile names who is on it');
+  say(/Tomas/.test(d.querySelector('.cam[data-cam="CAM-WIDE"] small').textContent), tag + 'the wide tile too');
+  say(/Sarah in frame/.test(d.querySelector('.cam[data-cam="CAM-GUEST"] small').textContent),
+      tag + 'a camera health note is NOT hidden by the guest name');
+
+  /* a server roster is authoritative and must stop the polling */
+  w.onServerMessage({ type:'roster', guests:[{ name:'Daniel Reyes', role:'Speaker' }] });
+  say(/Daniel Reyes/.test($('roster').textContent), tag + 'a server roster replaces the polled one');
+  say(!/Nadia Okafor/.test($('roster').textContent), tag + 'and clears the polled names');
+  const before = polls;
+  w.fetch = async () => { polls++; return { ok:true, json: async () => ({ ok:true, participants:rows }) }; };
+  w.dispatchEvent(new w.Event('focus'));
+  await wait(400);
+  say(polls === before, tag + 'polling STOPS once the server sends a roster');
+  say(!/Nadia Okafor/.test($('roster').textContent), tag + 'the polled roster does not come back and overwrite it');
+  f.remove();
+}
+
+(async () => {
+  try {
+    await signup('ok');
+    await signup('reject');
+    await signup('error');
+    await cameraDenied();
+    await phoneFit();
+    await deskBridge();
+    await dashboard('empty');
+    await dashboard('queued');
+    await dashboard('live');
+    await deskStillWorks();
+  } catch (e) { say(false, 'HARNESS THREW: ' + (e && e.stack || e)); }
+  const fails = log.filter((l) => l.startsWith('FAIL')).length;
+  log.push('', (fails ? fails + ' FAILED' : 'all ' + log.filter((l)=>l.startsWith('PASS')).length + ' passed'));
+  flush();
+  document.title = fails ? 'FAILED' : 'OK';
+  try { await fetch('/result', { method: 'POST', body: log.join('\n') }); } catch {}
+})();
+</script>
+</body></html>

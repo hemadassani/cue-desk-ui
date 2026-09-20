@@ -3,3 +3,12 @@ Thumbs.db
 .env
 .env.*
 node_modules/
+
+# The Apps Script /exec URL is a capability URL: anyone with it can write
+# to the sheet. Copy config.example.js to config.js and keep it local.
+config.js
+
+# test run leftovers, if a run is interrupted
+tests/.result.txt
+tests/.profile/
+tests/.config.js.bak
