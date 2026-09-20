@@ -92,6 +92,8 @@ select{height:30px;flex:1;min-width:0;padding:0 8px;border-radius:9px;background
 .kv dd{margin:0;font-weight:500;text-align:right;overflow-wrap:anywhere;min-width:0}
 .qr{display:grid;gap:8px;padding:12px;border-radius:14px;background:var(--raised)}
 .qr p{margin:0;color:var(--muted);font-size:11px}
+.qr input{height:34px;padding:0 11px;border-radius:9px;background:var(--surface);border:1px solid var(--line);color:var(--text);font:500 11.5px var(--font);width:100%}
+.qr input::placeholder{color:var(--muted);font-weight:400}
 .qr code{display:block;padding:9px 11px;border-radius:9px;background:var(--surface);color:#c9b8ff;font-size:11px;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .btn{height:36px;padding:0 14px;border-radius:11px;background:var(--raised);border:1px solid var(--line);color:var(--text);
   font-weight:600;font-size:12px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none}
@@ -144,6 +146,8 @@ select{height:30px;flex:1;min-width:0;padding:0 8px;border-radius:9px;background
         <div class="qr">
           <p>Guests open this on their phone, type their name and take two photos.</p>
           <code id="signupUrl">signup.html</code>
+          <p class="warn" id="hostWarn" hidden>This is a <b>localhost</b> address. A phone cannot open it &mdash; it would look for a server on the phone itself. Type this machine's address on the network and the link below updates.</p>
+          <input type="text" id="hostIn" placeholder="e.g. 192.168.1.20:8765" spellcheck="false" autocapitalize="off" hidden>
           <div class="stack">
             <button class="btn full" id="copy" type="button"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2.5"></rect><path d="M15 5.5A2.5 2.5 0 0 0 12.5 3H5.5A2.5 2.5 0 0 0 3 5.5v7A2.5 2.5 0 0 0 5.5 15"></path></svg>Copy the sign-up link</button>
             <a class="btn full" id="openSignup" href="signup.html" target="_blank" rel="noopener">Open it here</a>
@@ -195,9 +199,34 @@ const local = {
 };
 function queued(){ try { return JSON.parse(localStorage.getItem(QUEUE) || '[]'); } catch { return []; } }
 
-const signupHref = new URL('signup.html', location.href).href;
-$('signupUrl').textContent = signupHref;
-$('openSignup').href = signupHref;
+/* The sign-up link has to be one a PHONE can open. When this dashboard is itself
+   opened on localhost, `location.href` gives 127.0.0.1, which on a phone means the
+   phone - so it silently goes nowhere. Let the operator name the real address once
+   and remember it. `signupBase` in config.js overrides this entirely. */
+const HOSTKEY = 'cue.dash.host';
+const LOOPBACK = /^(localhost|127(?:\.\d+){3}|\[?::1\]?)$/i.test(location.hostname);
+function savedHost(){ try { return localStorage.getItem(HOSTKEY) || ''; } catch { return ''; } }
+function saveHost(v){ try { v ? localStorage.setItem(HOSTKEY, v) : localStorage.removeItem(HOSTKEY); } catch {} }
+let signupHref = '';
+function paintSignupLink(){
+  const base = (CFG.signupBase || savedHost()).trim();
+  if (base){
+    const withScheme = /^https?:\/\//i.test(base) ? base : location.protocol + '//' + base;
+    try { signupHref = new URL('signup.html', withScheme.replace(/\/*$/, '/')).href; }
+    catch { signupHref = new URL('signup.html', location.href).href; }
+  } else {
+    signupHref = new URL('signup.html', location.href).href;
+  }
+  $('signupUrl').textContent = signupHref;
+  $('openSignup').href = signupHref;
+  /* only nag when the link really is unusable from a phone */
+  const unusable = LOOPBACK && !base && !CFG.signupBase;
+  $('hostWarn').hidden = !unusable;
+  $('hostIn').hidden = !(unusable || savedHost());
+  if (savedHost() && $('hostIn').value !== savedHost()) $('hostIn').value = savedHost();
+}
+$('hostIn').oninput = () => { saveHost($('hostIn').value.trim()); paintSignupLink(); };
+paintSignupLink();
 /* navigator.clipboard does not exist on a plain-HTTP origin, and this page is
    normally served from a LAN address so phones can reach the sign-up link.
    Fall back to the old execCommand path, which does work there. */

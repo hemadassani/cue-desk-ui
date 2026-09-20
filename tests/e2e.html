@@ -136,6 +136,23 @@ async function dashboard(mode) {
     say(/This device only/.test($('srcChip').textContent), tag + 'labels the data as device-only');
     say(/Not reading the Google Sheet/.test($('notes').textContent), tag + 'explains how to fix it');
     say($('signupUrl').textContent.endsWith('/signup.html'), tag + 'shows the sign-up URL to hand out');
+    /* The harness runs on 127.0.0.1, which is exactly the case that silently
+       fails on a phone: it would look for a server on the phone itself. */
+    say(!$('hostWarn').hidden, tag + 'WARNS that a localhost link is useless on a phone');
+    say(!$('hostIn').hidden, tag + 'offers a box to type the real network address');
+    $('hostIn').value = '192.168.1.20:8765';
+    $('hostIn').dispatchEvent(new w.Event('input'));
+    say($('signupUrl').textContent === 'http://192.168.1.20:8765/signup.html', tag + 'the link becomes the address a phone can open');
+    say($('openSignup').href === 'http://192.168.1.20:8765/signup.html', tag + 'and Open-it-here follows the same address');
+    say($('hostWarn').hidden, tag + 'the warning clears once an address is given');
+    let copied2 = null;
+    Object.defineProperty(w.navigator, 'clipboard', { configurable: true, value: { writeText: async (t) => { copied2 = t; } } });
+    $('copy').click();
+    say(await until(() => copied2 === 'http://192.168.1.20:8765/signup.html'), tag + 'Copy copies the phone-reachable link, not localhost');
+    $('hostIn').value = 'https://cue.loca.lt';
+    $('hostIn').dispatchEvent(new w.Event('input'));
+    say($('signupUrl').textContent === 'https://cue.loca.lt/signup.html', tag + 'a full tunnel URL with its own scheme is accepted');
+    w.localStorage.removeItem('cue.dash.host');
   }
   if (mode === 'queued') {
     say(d.querySelectorAll('.card').length === 1, tag + 'shows the device-held sign-up');
