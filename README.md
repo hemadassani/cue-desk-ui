@@ -63,18 +63,40 @@ pretending — the sign-up page shows "Not linked yet", and a send that
 cannot reach the sheet is held on the phone and reported as
 **"Saved on this phone, not sent yet"**, never as success.
 
-### Phones need a real address
+### Testing on a phone: you need HTTPS
 
-`localhost` on your laptop is not reachable from a phone, and
-`getUserMedia` needs a secure context. So either serve over HTTPS, or use
-the one exemption browsers make for `http://localhost`, or put a tunnel
-in front:
+Two separate problems, and they are easy to confuse:
 
-    python -m http.server 8765        # then reach it via a tunnel, or HTTPS
+1. **`localhost` is not reachable from a phone.** It means *the phone
+   itself*, so the request goes nowhere and the browser eventually reports
+   that the server stopped responding — which reads like a slow page
+   rather than a wrong address.
+2. **`getUserMedia` needs a secure context.** `http://192.168.x.x` is not
+   one, so the in-page camera is refused outright and only the file-upload
+   fallback works. No amount of page code changes this.
 
-On a plain-HTTP LAN address the camera will be refused. The page handles
-that — it offers a file upload instead — but the two-photo flow is much
-better with the live camera, so HTTPS is worth the trouble.
+One command solves both:
+
+    python tools/serve_https.py
+
+It detects your LAN IP, generates a 14-day self-signed certificate that
+carries that IP in `subjectAltName` (required — `CN` alone is rejected),
+binds to `0.0.0.0`, and prints both URLs:
+
+    this machine : https://127.0.0.1:8443/dashboard.html
+    a phone      : https://192.168.1.20:8443/signup.html
+
+The phone will warn about the certificate. **Accept it once** — that is
+what makes the origin secure, and the two-photo camera flow then works.
+Certificates land in `.certs/`, which is gitignored.
+
+`http://localhost` also counts as a secure context, so plain
+`python -m http.server 8765` is fine for testing on the serving machine
+itself. It is only phones that need the above.
+
+**If the form stops loading later, check your IP first.** It changes when
+you switch network, and `signupBase` in `config.js` then points at an
+address that no longer exists.
 
 ### What ends up in the sheet
 
