@@ -40,6 +40,8 @@ async function signup(mode) {
   const got2 = await until(() => $('v2').videoWidth > 0);
   say(got2, tag + 'front camera preview has frames');
   say(!$('shot2').classList.contains('dead'), tag + 'no camera-denied fallback shown');
+  say($('v2').classList.contains('mirror'), tag + 'a selfie preview is mirrored');
+  say(!$('flip').hidden, tag + 'a Flip control is offered while the camera is live');
   $('next').click();                                          /* take */
   say(!$('p2').hidden && /^data:image\/jpeg;base64,/.test($('p2').src), tag + 'front photo captured as JPEG');
   const frontLen = $('p2').src.length;
@@ -285,7 +287,9 @@ async function cameraDenied() {
   $('name').value = 'Rex Denied';
   $('next').click();
   say(await until(() => $('shot2').classList.contains('dead')), tag + 'shows the camera-unavailable fallback');
-  say(/upload one instead/i.test($('s2').textContent), tag + 'tells them to upload a photo instead');
+  const panel = $('shot2').querySelector('.nocam').textContent;
+  say(/Photo/.test(panel) && /instead/i.test(panel), tag + 'points them at the Photo fallback instead');
+  say(/declined|blocked/i.test(panel), tag + 'and says the camera was declined rather than a bare failure');
   say(!$('pick').hidden, tag + 'the Photo upload button is offered');
   $('next').click();
   say(/No picture yet/.test($('e2').textContent), tag + 'refuses to advance with no photo, and says why');
@@ -300,12 +304,33 @@ async function cameraDenied() {
   $('file').files = dt.files;
   $('file').dispatchEvent(new w.Event('change'));
   say(await until(() => /^data:image\/jpeg;base64,/.test($('p2').src || '')), tag + 'an uploaded file becomes the front photo');
+  say(!$('file').hasAttribute('capture'), tag + 'the file input does NOT force capture=user (Android ignores it and opens the BACK camera)');
   say($('pick').hidden, tag + 'upload button hides once a photo is in');
   f.remove();
 }
 
 /* Every step must fit the viewport with the button reachable. Before the layout
    was viewport-bounded, a 320x568 phone put Continue 126px below the fold. */
+/* A phone on a plain-http LAN address cannot use getUserMedia at all. The page
+   must say that, not shrug with "camera not available". */
+async function insecureContext() {
+  const tag = '[insecure] ';
+  const f = await frame('../signup.html?insecure');
+  const w = f.contentWindow, d = f.contentDocument, $ = (id) => d.getElementById(id);
+  Object.defineProperty(w, 'isSecureContext', { configurable: true, value: false });
+  $('name').value = 'Http Only';
+  $('next').click();
+  say(await until(() => $('shot2').classList.contains('dead')), tag + 'the preview is reported unavailable');
+  const text = $('shot2').querySelector('.nocam').textContent;
+  say(/secure connection/i.test(text), tag + 'it says the camera needs a secure connection');
+  say(/https/i.test(text), tag + 'it names https as the requirement');
+  say(text.includes(w.location.host), tag + 'it shows the address that is the problem');
+  say(/Photo/.test(text), tag + 'it points at the upload fallback that does work');
+  say(!$('pick').hidden, tag + 'the Photo button is offered');
+  say($('flip').hidden, tag + 'the Flip control is hidden when there is no live camera');
+  f.remove();
+}
+
 async function phoneFit() {
   const SIZES = [[320,568,'iPhone SE'],[360,640,'small Android'],[375,667,'iPhone 8'],
                  [390,844,'iPhone 14'],[414,896,'11 Pro Max'],[412,915,'Pixel 7'],[667,375,'landscape']];
@@ -394,6 +419,7 @@ async function deskBridge() {
     await signup('reject');
     await signup('error');
     await cameraDenied();
+    await insecureContext();
     await phoneFit();
     await deskBridge();
     await dashboard('empty');
