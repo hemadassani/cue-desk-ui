@@ -332,8 +332,10 @@ async function insecureContext() {
 }
 
 async function phoneFit() {
-  const SIZES = [[320,568,'iPhone SE'],[360,640,'small Android'],[375,667,'iPhone 8'],
-                 [390,844,'iPhone 14'],[414,896,'11 Pro Max'],[412,915,'Pixel 7'],[667,375,'landscape']];
+  /* Heights are the USABLE viewport, i.e. the screen minus the browser's address
+     bar, because that is what the guest actually gets. */
+  const SIZES = [[320,460,'SE +chrome'],[360,520,'Android +chrome'],[375,553,'iPhone8 +chrome'],
+                 [390,664,'iPhone14 +chrome'],[412,732,'Pixel7 +chrome'],[390,844,'iPhone14 full'],[667,375,'landscape']];
   for (const [w, h, label] of SIZES) {
     const tag = '[fit ' + label + ' ' + w + 'x' + h + '] ';
     const f = document.createElement('iframe');
@@ -351,12 +353,29 @@ async function phoneFit() {
       if (vScroll > 0) worst += ' step' + step + ' pageScrollsBy' + vScroll;
       if (hScroll > 0) worst += ' step' + step + ' hScrollBy' + hScroll;
       if (bar.bottom > win.innerHeight + 1) worst += ' step' + step + ' buttonBelowFoldBy' + Math.round(bar.bottom - win.innerHeight);
+      /* the shell clips, so a picture wider than it is silently cropped and the
+         face guide no longer lines up with what the guest sees */
+      const shell = d.querySelector('.shell');
+      const overX = shell.scrollWidth - Math.round(shell.getBoundingClientRect().width);
+      if (overX > 0) worst += ' step' + step + ' clippedByX' + overX;
+      if (bar.right > win.innerWidth + 1) worst += ' step' + step + ' buttonOffRightBy' + Math.round(bar.right - win.innerWidth);
+      const body = d.querySelector('#s' + step + ' .body');
+      const below = body.scrollHeight - body.clientHeight;
+      if (below > 0) worst += ' step' + step + ' contentHiddenBelowBy' + below;
       if (step === 2 || step === 3) {
         const sr = d.querySelector('#s' + step + ' .shot').getBoundingClientRect();
         if (sr.height < 100) worst += ' step' + step + ' pictureOnly' + Math.round(sr.height) + 'px';
       }
+      if (step === 4) {
+        /* Send stays disabled until consent is ticked, so a consent box below the
+           fold is a dead end. It was up to 284px down on every real phone. */
+        const chk = d.querySelector('#s4 .chk').getBoundingClientRect();
+        const br = body.getBoundingClientRect();
+        if (chk.bottom > br.bottom + 1) worst += ' CONSENT-OFF-SCREEN-BY' + Math.round(chk.bottom - br.bottom);
+        if (chk.right > win.innerWidth + 1) worst += ' consentOffRight';
+      }
     }
-    say(!worst, tag + 'fits, no page scroll, button on screen' + (worst ? ' --' + worst : ''));
+    say(!worst, tag + 'every step fits: no scroll, nothing clipped, consent reachable' + (worst ? ' --' + worst : ''));
     f.remove();
   }
 }
