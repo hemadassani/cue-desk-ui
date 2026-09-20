@@ -1,7 +1,8 @@
-<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#111;color:#eee;font:12px monospace">
+<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#111;color:#eee;font:11px monospace">
 <pre id="o">probing</pre>
 <script>
-const SIZES=[[320,568,'iPhone SE1'],[360,640,'small Android'],[375,667,'iPhone 8'],[390,844,'iPhone 14'],[414,896,'11 Pro Max'],[412,915,'Pixel 7'],[667,375,'landscape']];
+const SIZES=[[320,460,'SE1 +chrome'],[360,520,'Android +chrome'],[375,553,'iPhone8 +chrome'],
+             [390,664,'iPhone14 +chrome'],[412,732,'Pixel7 +chrome'],[390,844,'iPhone14 full'],[667,375,'landscape']];
 const out=[];const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(f,ms=5000){const t=Date.now();while(Date.now()-t<ms){try{if(f())return true}catch{}await wait(50)}return false}
 (async()=>{
@@ -9,27 +10,24 @@ for(const [w,h,label] of SIZES){
   const f=document.createElement('iframe');f.style.cssText='border:0';f.width=w;f.height=h;f.src='../signup.html';
   await new Promise(r=>{f.onload=r;document.body.appendChild(f)});
   const d=f.contentDocument,win=f.contentWindow,$=id=>d.getElementById(id);
+  const shell=d.querySelector('.shell');
   for(const step of [1,2,3,4]){
     if(step===2){$('name').value='Test Person';$('next').click();await until(()=>$('v2').videoWidth>0);}
     if(step===3){$('next').click();$('next').click();await until(()=>$('v3').videoWidth>0);}
     if(step===4){$('next').click();$('next').click();}
-    await wait(120);
-    const de=d.documentElement,body=d.body;
+    await wait(150);
+    const body=d.querySelector('#s'+step+' .body');
+    const cut=body?body.scrollHeight-body.clientHeight:0;
+    const overW=shell.scrollWidth-Math.round(shell.getBoundingClientRect().width);
     const bar=$('bar').getBoundingClientRect();
-    const shell=d.querySelector('.shell').getBoundingClientRect();
     const shot=d.querySelector('#s'+step+' .shot');
     const sr=shot?shot.getBoundingClientRect():null;
-    const activeBody=d.querySelector('#s'+step+' .body');
-    const ab=activeBody?activeBody.getBoundingClientRect():null;
-    out.push([label,w+'x'+h,'step'+step,
-      'hscroll='+(de.scrollWidth-de.clientWidth),
-      'pageScroll='+(de.scrollHeight-de.clientHeight),
-      'barBottom='+Math.round(bar.bottom)+'/'+win.innerHeight,
-      'barVisible='+(bar.bottom<=win.innerHeight+1&&bar.top>=0),
-      'shellBottom='+Math.round(shell.bottom),
-      sr?('shot='+Math.round(sr.width)+'x'+Math.round(sr.height)+' bottom='+Math.round(sr.bottom)+' fits='+(sr.bottom<=win.innerHeight+1)):'shot=-',
-      ab?('bodyScroll='+(activeBody.scrollHeight-activeBody.clientHeight)):'-'
-    ].join('  '));
+    let extra='';
+    if(step===4){
+      const chk=d.querySelector('#s4 .chk'), br=body.getBoundingClientRect(), cr=chk.getBoundingClientRect();
+      extra=' consentVisible='+(cr.bottom<=br.bottom+1);
+    }
+    out.push(`${label.padEnd(16)} ${(w+'x'+h).padEnd(9)} s${step} hidden=${String(cut).padStart(3)} overflowX=${String(overW).padStart(3)} btnRight=${String(Math.round(bar.right)).padStart(4)}/${w} ${sr?('pic='+Math.round(sr.width)+'x'+Math.round(sr.height)):''}${extra}`);
   }
   f.remove();
 }
